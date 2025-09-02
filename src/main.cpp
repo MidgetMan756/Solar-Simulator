@@ -3,13 +3,14 @@
 #include <cmath>
 #include <random>
 #include <vector>
+#include <map>
 #include <algorithm>
 #include <numeric>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 
-// Shaders
+// Shaders for masses
 const char *vertexShaderSource = "#version 330 core\n"
     "layout (location = 0) in vec3 aPos;\n"
     "void main()\n"
@@ -33,17 +34,27 @@ const double earthMass = 5.97e24;
 const double earthRadius = 6371000;
 const double moonMass = 7.35e22;
 const double moonRadius = 1740000;
+const double sunMass = 1.99e30;
+const double sunRadius = 6.957e8;
 const double earthMoonDistance = 384400000;
 const double moonTanVelocity = 1018.5;
 
 // How many seconds per fram
 const double timeStepMult = 600;
 
+// Camera zoom relative to moons orbital distance
+double zoomFactor = 0.9;
+// Camera center if you ever add panning (keep 0 for now)
+double camX = 0.0, camY = 0.0;
+
 // Zoom out to fit everything
-double screenScale = 1.0 / (384400000.0 * 2) * 0.9;  // fit 90% of the screen width
+double screenScale = 1.0 / (384400000.0 * 2) * zoomFactor;  // fit 90% of the screen width at original value
 
 // Updates as mouse is pressed and released
-bool isMouseButtonDown = false;
+bool isLeftMouseButtonDown = false;
+bool isRightMouseButtonDown = false;
+
+int massType = 0;
 
 // Start (x,y) pos for the mouse click
 double startxpos, startypos;
@@ -51,6 +62,7 @@ double startxpos, startypos;
 // GLFW global
 GLFWwindow* window;
 unsigned int shaderProgram;
+unsigned int textShaderProgram;
 
 // Create the class and vector of masses
 class Mass;
@@ -65,6 +77,13 @@ bool checkCollision(const Mass& m1, const Mass& m2);
 void resolveCollision(Mass& m1, Mass& m2);
 void mergeMasses(Mass& m1, Mass& m2);
 void initGLFWnShit();
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
+inline void screenToNDC(double sx, double sy, int width, int height,
+                        double& nx, double& ny);
+inline void ndcToWorld(double nx, double ny, double& wx, double& wy);
+inline void screenToWorld(double sx, double sy, int width, int height,
+                          double& wx, double& wy);
+
 
 // Class for each solar mass
 class Mass {
@@ -200,6 +219,7 @@ int main() {
 
     // set up GLFW window and all the other things
     initGLFWnShit();
+    glfwSetScrollCallback(window, scroll_callback);
 
     // Create an instance of mass based off the earth
     Mass earth;
@@ -328,59 +348,63 @@ void processInput(GLFWwindow* window) {
         glfwSetWindowShouldClose(window, true);
 
     // If the left mouse button is down and the mouse button isn't already down get the starting pos of the cursor
-    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && !isMouseButtonDown) {
-        isMouseButtonDown = true;
+    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && !isLeftMouseButtonDown) {
+        isLeftMouseButtonDown = true;
         glfwGetCursorPos(window, &startxpos, &startypos);
 
     // If the left mouse button isn't down and wasn't already up get the pos of the cursor
-    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE && isMouseButtonDown) {
-        std::cout << "MOUSE RELEASED" << std::endl;
-        isMouseButtonDown = false;
+    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE && isLeftMouseButtonDown) {
+        isLeftMouseButtonDown = false;
 
-        // ending mouse pos
-        double xpos, ypos;
-        glfwGetCursorPos(window, &xpos, &ypos);
+        // end cursor
+        double endx, endy;
+        glfwGetCursorPos(window, &endx, &endy);
 
-        // screen size
-        int width, height;
-        glfwGetWindowSize(window, &width, &height);
+        // framebuffer size (use framebuffer for pixel-accurate mapping)
+        int fbw, fbh;
+        glfwGetFramebufferSize(window, &fbw, &fbh);
 
-        // Convert to normalized device coords (-1..1)
-        double ndcX = (xpos / width) * 2.0 - 1.0;
-        double ndcY = 1.0 - (ypos / height) * 2.0;
+        // convert both start and end to world, honoring current zoom (screenScale)
+        double startWX, startWY, endWX, endWY;
+        screenToWorld(startxpos, startypos, fbw, fbh, startWX, startWY);
+        screenToWorld(endx,      endy,      fbw, fbh, endWX,   endWY);
 
-        double startndcX = (startxpos / width) * 2.0 - 1.0;
-        double startndcY = 1.0 - (startypos / height) * 2.0;
+        // pick mass archetype
+        double min = massType * 3.0 + 0.25;
+        double max = massType * 3.0 + 2.25;
 
-        // Correct for aspect ratio
-        double aspect = static_cast<double>(width) / static_cast<double>(height);
-        ndcX *= aspect;
-        startndcX *= aspect;
+        double massMult = earthMass, radiusMult = earthRadius;
+        float r=0.75f, g=0.75f, b=0.75f;
+        switch (massType) {
+            case 0: r=0.75f; g=0.75f; b=0.75f; massMult = moonMass;  radiusMult = moonRadius;  break;
+            case 1: r=0.0f;  g=0.0f;  b=1.0f;  massMult = earthMass; radiusMult = earthRadius; break;
+            case 2: r=0.75f; g=0.75f; b=0.0f;  massMult = sunMass;   radiusMult = sunRadius;   break;
+        }
 
-        // Scale into your world space
-        double worldScale = earthMoonDistance;
-        double worldX = ndcX * worldScale;
-        double worldY = ndcY * worldScale;
+        float random = randomFloat((float)min, (float)max);
 
-        double startworldX = startndcX * worldScale;
-        double startworldY = startndcY * worldScale;
-        
-        // Generate random mass and radius based on the earth's
-        float random = randomFloat(0.25f, 5.0f);
-
-        // Create new mass and spawn it in using the distance the mouse is pulled and the randomly generated float
         Mass temp;
-        temp.r = 1.5f, temp.g = 1.5f, temp.b = 1.5f;
-        temp.x = startworldX * 2.2;
-        temp.y = startworldY * 2.2;
-        temp.vx = (worldX - startworldX) / 6000;
-        temp.vy = (worldY - startworldY) / 6000;
-        temp.mass = earthMass * random;
-        temp.radius = earthRadius * random;
-        temp.init();
+        temp.r = r; temp.g = g; temp.b = b;
 
-        // Put the new mass in the masses vector
+        // place exactly where you clicked (in world units)
+        temp.x = startWX;
+        temp.y = startWY;
+
+        // give it velocity from the drag vector (tune divisor to taste)
+        temp.vx = (endWX - startWX) / 6000.0;
+        temp.vy = (endWY - startWY) / 6000.0;
+
+        temp.mass   = massMult   * random;
+        temp.radius = radiusMult * random;
+
+        temp.init();
         massesVector.push_back(temp);
+    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && !isRightMouseButtonDown) {
+        isRightMouseButtonDown = true;
+        massType++;
+        massType = massType % 3;
+    } else if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE && isRightMouseButtonDown) {
+        isRightMouseButtonDown = false;
     }
 }
 
@@ -508,6 +532,7 @@ void initGLFWnShit(){
     // Bind the Vertex Buffer Object to target
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
 
+    // For masses
     // Create a shader object and save it's ID
     unsigned int vertexShader;
     vertexShader = glCreateShader(GL_VERTEX_SHADER);
@@ -542,4 +567,32 @@ void initGLFWnShit(){
     // Tell OpenGL how to interpret the vertices and enable it
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
+    zoomFactor += (float)yoffset * 0.001f;
+    if (zoomFactor < 0.0001) zoomFactor = 0.001; // prevent negative zoom
+    screenScale = 1.0 / (384400000.0 * 2) * zoomFactor;
+    std::cout << zoomFactor << std::endl;
+}
+
+inline void screenToNDC(double sx, double sy, int width, int height,
+                        double& nx, double& ny) {
+    nx = (sx / width) * 2.0 - 1.0;
+    ny = 1.0 - (sy / height) * 2.0; // flip Y (GLFW top-left -> NDC top)
+    // NOTE: do NOT multiply nx by aspect here unless your render path does.
+    // Your current drawing uses raw NDC without aspect compensation.
+}
+
+inline void ndcToWorld(double nx, double ny, double& wx, double& wy) {
+    // inverse of world->NDC: draw = world * screenScale
+    wx = nx / screenScale + camX;
+    wy = ny / screenScale + camY;
+}
+
+inline void screenToWorld(double sx, double sy, int width, int height,
+                          double& wx, double& wy) {
+    double nx, ny;
+    screenToNDC(sx, sy, width, height, nx, ny);
+    ndcToWorld(nx, ny, wx, wy);
 }
