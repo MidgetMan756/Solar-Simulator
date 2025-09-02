@@ -1,0 +1,545 @@
+#include <iostream>
+#include <string>
+#include <cmath>
+#include <random>
+#include <vector>
+#include <algorithm>
+#include <numeric>
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#include <GL/gl.h>
+
+// Shaders
+const char *vertexShaderSource = "#version 330 core\n"
+    "layout (location = 0) in vec3 aPos;\n"
+    "void main()\n"
+    "{\n"
+    "   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+    "}\0";
+
+const char *fragmentShaderSource = "#version 330 core\n"
+    "out vec4 FragColor;\n"
+    "uniform vec3 uColor; // RGB color passed from CPU\n"
+    "void main()\n"
+    "{\n"
+    "FragColor = vec4(uColor, 1.0);\n"
+    "}\0";
+
+// Gravistational Const (G)
+const double G = 6.674e-11;
+
+// Astronomical values in metric
+const double earthMass = 5.97e24;
+const double earthRadius = 6371000;
+const double moonMass = 7.35e22;
+const double moonRadius = 1740000;
+const double earthMoonDistance = 384400000;
+const double moonTanVelocity = 1018.5;
+
+// How many seconds per fram
+const double timeStepMult = 600;
+
+// Zoom out to fit everything
+double screenScale = 1.0 / (384400000.0 * 2) * 0.9;  // fit 90% of the screen width
+
+// Updates as mouse is pressed and released
+bool isMouseButtonDown = false;
+
+// Start (x,y) pos for the mouse click
+double startxpos, startypos;
+
+// GLFW global
+GLFWwindow* window;
+unsigned int shaderProgram;
+
+// Create the class and vector of masses
+class Mass;
+std::vector<Mass> massesVector;
+
+// Create functions
+double average(const std::vector<double>& v);
+void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+float randomFloat(float min, float max);
+void processInput(GLFWwindow* window);
+bool checkCollision(const Mass& m1, const Mass& m2);
+void resolveCollision(Mass& m1, Mass& m2);
+void mergeMasses(Mass& m1, Mass& m2);
+void initGLFWnShit();
+
+// Class for each solar mass
+class Mass {
+    public:
+
+        // Mass name
+        std::string name;
+
+        // Mass mass and radius
+        float mass;
+        float radius;
+        
+        // (x,y) pos (x,y) velocity (x,y) acceleration
+        double x = toOpenGL(0.0f), y = toOpenGL(0.0f);
+        double vx = 0.0f, vy = 0.0f;
+        double ax = 0.0f, ay = 0.0f;
+
+        // RGB color values
+        float r, g, b;
+
+        // Vertex Array Object and Vertex Buffer Object
+        unsigned int VAO, VBO;
+        
+        // number of sides, because circles don't exist, but 100 sided polygons are close enough
+        int numOfVertices = 100;
+
+        // Convert astronomical position to OpenGL position (-1,1)
+        float toOpenGL(double meters) {
+            return (float)(meters * screenScale);
+        }
+
+        // Initialize mass
+        void init() {
+            // Vector of vertices
+            std::vector<float> vertices;
+
+            // (x, y, z) of the origin of the circle
+            vertices.push_back(x);
+            vertices.push_back(y);
+            vertices.push_back(0.0f);
+
+            // Create a triangle then rotate and make another to make a circle esque shape
+            for (int i = 0; i <= numOfVertices; ++i) {
+                float angle = 2.0f * M_PI * i / numOfVertices;
+                vertices.push_back(radius * cos(angle) + x);
+                vertices.push_back(radius * sin(angle) + y);
+                vertices.push_back(0.0f);
+            }
+
+            // Create and assign VAO and VBO
+            glGenVertexArrays(1, &VAO);
+            glGenBuffers(1, &VBO);
+
+            // Bind VAO and VBO, of and the buffer data
+            glBindVertexArray(VAO);
+            glBindBuffer(GL_ARRAY_BUFFER, VBO);
+            glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(float), vertices.data(), GL_DYNAMIC_DRAW);
+
+            // Send the vertices
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+        }
+
+        // Update ther vertices based on new location
+        void updateVertices() {
+            std::vector<float> vertices;
+
+            // Convert physical position (in meters) to OpenGL coordinates
+            float drawX = (float)(x * screenScale);
+            float drawY = (float)(y * screenScale);
+            float drawRadius = (float)(radius * screenScale);
+
+            // Center of the mass
+            vertices.push_back(drawX);
+            vertices.push_back(drawY);
+            vertices.push_back(0.0f);
+
+            // Generate circle vertices around the center
+            for (int i = 0; i <= numOfVertices; ++i) {
+                float angle = 2.0f * M_PI * i / numOfVertices;
+                vertices.push_back(drawRadius * cos(angle) + drawX);
+                vertices.push_back(drawRadius * sin(angle) + drawY);
+                vertices.push_back(0.0f);
+            }
+
+            // Update VBO with the new vertices
+            glBindBuffer(GL_ARRAY_BUFFER, VBO);
+            glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(float), vertices.data());
+        }
+
+
+        // Draw the circle
+        void draw(unsigned int shaderProgram) {
+            glUseProgram(shaderProgram);
+
+            // Custom Color
+            int colorLoc = glGetUniformLocation(shaderProgram, "uColor");
+            glUniform3f(colorLoc, r, g, b);
+
+            // Bind the Vertex Array Object to it's target and draw the arrays
+            glBindVertexArray(VAO);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, numOfVertices + 2);
+        }
+
+        // Calculate the acceleration using GM/r^2
+        void calcAcceleration(double otherMass, double otherX, double otherY) {
+            double dx = otherX - x;
+            double dy = otherY - y;
+            double distSquared = dx * dx + dy * dy;
+            double force = G * otherMass / distSquared;
+            double dist = sqrt(distSquared);
+            ax = force * dx / dist;
+            ay = force * dy / dist;
+        }
+
+        // timeStepMult used to speed up time
+        // Add acceleration to the velocity
+        void calcVelocity() {
+            vx += ax * timeStepMult;
+            vy += ay * timeStepMult;
+        }
+
+        // Calculate the new position using velocity
+        void calcNewPos() {
+            x += vx * timeStepMult;
+            y += vy * timeStepMult;
+        }
+
+};
+
+// Main loop
+int main() {
+
+    // set up GLFW window and all the other things
+    initGLFWnShit();
+
+    // Create an instance of mass based off the earth
+    Mass earth;
+    earth.r = 0.0f, earth.g = 0.0f, earth.b = 1.0f;
+    earth.name = "Earth";
+    earth.mass = earthMass;
+    earth.radius = earthRadius * 2;
+    earth.x = -(earthMoonDistance / 5);
+    earth.vx = moonTanVelocity / 5;
+    earth.init();
+
+    // Add earth to the vector of masses
+    massesVector.push_back(earth);
+
+    // Create an insance of mass based off the moon
+    Mass moon;
+    moon.r = 1.5f, moon.g = 1.5f, moon.b = 1.5f;
+    moon.name = "Moon";
+    moon.mass = earthMass;
+    moon.radius = moonRadius;
+    moon.x = earthMoonDistance;
+    moon.vy = moonTanVelocity;
+    moon.init();
+
+    // Add moon to the vector masses
+    massesVector.push_back(moon);
+
+    // Destroy stuff ONLY when told
+    while(!glfwWindowShouldClose(window)) {
+        // Check keypresses
+        processInput(window);
+
+        // Render loop
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // For each mass calculate the gravitational pull every
+        // other mass applies to itself then average it and set it to the current mass
+        for (size_t i = 0; i < massesVector.size(); i++) {
+            Mass& m1 = massesVector[i];
+            std::vector<double> m1axVector;
+            std::vector<double> m1ayVector;
+            m1.ax = 0, m1.ay = 0;
+
+            for (size_t j = 0; j < massesVector.size(); j++) {
+                if (i==j) continue; // Don't pull yourself
+                Mass& m2 = massesVector[j];
+                m1.calcAcceleration(m2.mass, m2.x, m2.y);
+                m1axVector.push_back(m1.ax);
+                m1ayVector.push_back(m1.ay);
+            }
+
+            m1.ax = average(m1axVector);
+            m1.ay = average(m1ayVector);
+        }
+
+        // Update each mass
+        // (uncomment the 2 lines in the for loop so that the earth doesn't move to simulate earth moon orbit)
+        for (Mass& m : massesVector) {
+            // if (m.name != "Earth") {
+                m.calcVelocity();
+                m.calcNewPos();
+            // }
+            m.updateVertices();
+            m.draw(shaderProgram);
+        }
+
+        // Check for collision and either bounce the objects or merge the masses
+        // (swap with line above or below the or is commented in order to swap between merge and bounce)
+        for (size_t i = 0; i < massesVector.size(); i++) {
+            for (size_t j = i+1; j < massesVector.size(); j++) {
+                if (checkCollision(massesVector[i], massesVector[j])) {
+                    resolveCollision(massesVector[i], massesVector[j]); 
+                    // OR 
+                    // mergeMasses(massesVector[i], massesVector[j]);
+                }
+            }
+        }
+
+        // Only ran if masses merge, checks if mass is 0 then deleates it so it's not used
+        // in calculating acceleration of other masses
+        massesVector.erase(
+            std::remove_if(massesVector.begin(), massesVector.end(),
+                        [](const Mass& m){ return m.mass <= 0; }),
+            massesVector.end()
+        );
+ 
+        // Use shader program and bind VAO
+        glUseProgram(shaderProgram);
+
+        // Check if the window should close
+        glfwPollEvents();
+        glfwSwapBuffers(window);
+    }
+
+    // destroy the window and shut everything down when the programs over
+    glfwDestroyWindow(window);
+    glfwTerminate();
+    return 0;
+}
+
+// function to average all items in a vector
+double average(const std::vector<double>& v) {
+    if (v.empty()) return 0; // if the vector is empty
+    double sum = std::accumulate(v.begin(), v.end(), 0.0); // get sum
+    return sum / v.size(); // return sum / size
+}
+
+// each frame run this to modify the size of the window's viewport
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+        glViewport(0, 0, width, height);
+}
+
+// randomly generate a float
+float randomFloat(float min, float max) {
+    static std::random_device rd;  // seed
+    static std::mt19937 gen(rd()); // mersenne twister
+    std::uniform_real_distribution<float> dist(min, max);
+    return dist(gen);
+}
+
+// Process keyboard & mouse input
+void processInput(GLFWwindow* window) {
+    
+    // If the escape key was pressed shut down the window
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        glfwSetWindowShouldClose(window, true);
+
+    // If the left mouse button is down and the mouse button isn't already down get the starting pos of the cursor
+    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS && !isMouseButtonDown) {
+        isMouseButtonDown = true;
+        glfwGetCursorPos(window, &startxpos, &startypos);
+
+    // If the left mouse button isn't down and wasn't already up get the pos of the cursor
+    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE && isMouseButtonDown) {
+        std::cout << "MOUSE RELEASED" << std::endl;
+        isMouseButtonDown = false;
+
+        // ending mouse pos
+        double xpos, ypos;
+        glfwGetCursorPos(window, &xpos, &ypos);
+
+        // screen size
+        int width, height;
+        glfwGetWindowSize(window, &width, &height);
+
+        // Convert to normalized device coords (-1..1)
+        double ndcX = (xpos / width) * 2.0 - 1.0;
+        double ndcY = 1.0 - (ypos / height) * 2.0;
+
+        double startndcX = (startxpos / width) * 2.0 - 1.0;
+        double startndcY = 1.0 - (startypos / height) * 2.0;
+
+        // Correct for aspect ratio
+        double aspect = static_cast<double>(width) / static_cast<double>(height);
+        ndcX *= aspect;
+        startndcX *= aspect;
+
+        // Scale into your world space
+        double worldScale = earthMoonDistance;
+        double worldX = ndcX * worldScale;
+        double worldY = ndcY * worldScale;
+
+        double startworldX = startndcX * worldScale;
+        double startworldY = startndcY * worldScale;
+        
+        // Generate random mass and radius based on the earth's
+        float random = randomFloat(0.25f, 5.0f);
+
+        // Create new mass and spawn it in using the distance the mouse is pulled and the randomly generated float
+        Mass temp;
+        temp.r = 1.5f, temp.g = 1.5f, temp.b = 1.5f;
+        temp.x = startworldX * 2.2;
+        temp.y = startworldY * 2.2;
+        temp.vx = (worldX - startworldX) / 6000;
+        temp.vy = (worldY - startworldY) / 6000;
+        temp.mass = earthMass * random;
+        temp.radius = earthRadius * random;
+        temp.init();
+
+        // Put the new mass in the masses vector
+        massesVector.push_back(temp);
+    }
+}
+
+// Check if the masses are colliding
+bool checkCollision(const Mass& m1, const Mass& m2) {
+    // Get the x dist and y dist
+    double dx = m1.x - m2.x;
+    double dy = m1.y - m2.y;
+
+    // Calc the squared distance
+    double distSq = dx*dx + dy*dy;
+    
+    // Closest the two masses can be without existing in the same space
+    double minDist = m1.radius + m2.radius;
+
+    // Return true if the distance is less than the least possible distance
+    return distSq < (minDist * minDist);
+}
+
+// Bounce masses
+void resolveCollision(Mass& m1, Mass& m2) {
+
+    // Calculate the distance between the two masses
+    double dx = m1.x - m2.x;
+    double dy = m1.y - m2.y;
+    double dist = std::sqrt(dx*dx + dy*dy);
+
+    if (dist == 0.0) return; // avoid divide by zero
+
+    // Normal vector
+    double nx = dx / dist;
+    double ny = dy / dist;
+
+    // Relative velocity
+    double vx = m1.vx - m2.vx;
+    double vy = m1.vy - m2.vy;
+
+    // Relative velocity in terms of normal direction
+    double relVel = vx * nx + vy * ny;
+
+    // Only resolve if they are moving toward each other
+    if (relVel > 0) return;
+
+    // Elastic collision impulse
+    double e = 1.0; // coefficient of restitution (1 = perfectly elastic. adjust as you want)
+    double j = -(1 + e) * relVel / (1/m1.mass + 1/m2.mass);
+
+    // Apply impulse
+    double impulseX = j * nx;
+    double impulseY = j * ny;
+
+    // Change velocities based on elastic collision
+    m1.vx += impulseX / m1.mass;
+    m1.vy += impulseY / m1.mass;
+    m2.vx -= impulseX / m2.mass;
+    m2.vy -= impulseY / m2.mass;
+
+    // Push them apart slightly so they don’t sink into each other
+    double overlap = (m1.radius + m2.radius) - dist;
+    m1.x += (overlap/2) * nx;
+    m1.y += (overlap/2) * ny;
+    m2.x -= (overlap/2) * nx;
+    m2.y -= (overlap/2) * ny;
+}
+
+// Merge masses
+void mergeMasses(Mass& m1, Mass& m2) {
+    // conserve momentum
+    double totalMass = m1.mass + m2.mass;
+    m1.vx = (m1.vx * m1.mass + m2.vx * m2.mass) / totalMass;
+    m1.vy = (m1.vy * m1.mass + m2.vy * m2.mass) / totalMass;
+
+    // Set the new mass and radius based on the 2 masses total mass and approximate volume
+    m1.mass = totalMass;
+    m1.radius = std::cbrt(std::pow(m1.radius,3) + std::pow(m2.radius,3)); // approximate volume merge
+
+    m2.mass = 0; // mark m2 as dead :(
+}
+
+// stuff to initialize GLFW and other shit
+void initGLFWnShit(){
+    // Init glfw
+    glfwInit();
+
+    // Let glfw know what we're using
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    // Create 1000x1000 window
+    window = glfwCreateWindow(1000, 1000, "Solar Sim", NULL, NULL);
+
+    // If window isn't made
+    if (window == NULL) {
+        std::cerr << "Trouble making window";
+        glfwTerminate();
+    }
+
+    // Set current window context
+    glfwMakeContextCurrent(window);
+
+    // set up glad for colors and stuff
+    gladLoadGL();
+
+    // set up the current frame
+    glViewport(0, 0, 1000, 1000);
+
+    // Allows window to be resized
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+
+    // Create dark blue background
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+
+    // Create Vertex Buffer Object (VBO) and save it's ID
+    unsigned int VBO;
+    glGenBuffers(1, &VBO);
+
+    // Create Vertex Array Object (VAO) and save it's ID
+    unsigned int VAO;
+    glGenVertexArrays(1, &VAO);
+
+    // Bind Vertex Array Object
+    glBindVertexArray(VAO);
+
+    // Bind the Vertex Buffer Object to target
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+
+    // Create a shader object and save it's ID
+    unsigned int vertexShader;
+    vertexShader = glCreateShader(GL_VERTEX_SHADER);
+
+    // Attach the source code and compile
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+
+    // Create a shader object and save it's ID
+    unsigned int fragmentShader;
+    fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+
+    // Attach the source code and compile
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+
+    // Create a program and save it's ID
+    shaderProgram = glCreateProgram();
+
+    // Attach shaders to the program and link them
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+    glLinkProgram(shaderProgram);
+
+    // Use program
+    glUseProgram(shaderProgram);
+
+    // Delete shaders to free mem
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    // Tell OpenGL how to interpret the vertices and enable it
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+}
