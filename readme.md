@@ -22,13 +22,29 @@ Simulate gravitational interactions between celestial bodies such as the Sun, Ea
 
 ## Dependencies
 
-- **GLFW**: For window management and input  
-- **GLAD**: For OpenGL function loading  
-- **OpenGL**: Rendering graphics  
+**GLFW** - [GLFW](https://www.glfw.org/) — Window and input handling  
+**GLAD** - [GLAD](https://glad.dav1d.de/) — OpenGL function loader  
+**OpenGL** - OpenGL 3.3 Core Profile  
 
 Ensure these are installed on your system before building.
 
 ---
 
 ## Project Structure
-
+SolarSim/
+├── .vscode/ # VSCode configuration files
+│ ├── c_cpp_properties.json
+│ └── settings.json
+├── build/ # Compiled binary
+│ └── SolarSim
+├── include/ # Header files
+│ ├── glad/
+│ │ └── glad.h
+│ └── KHR/
+│ └── khrplatform.h
+├── src/ # Source files
+│ ├── glad.c
+│ └── main.cpp
+├── .gitattributes
+├── makefile
+└── README.md
