@@ -1,0 +1,15 @@
+# Ignore build output
+/build
+*.o
+*.obj
+*.exe
+
+# Ignore VSCode settings
+.vscode/
+
+# Ignore Glad headers and source
+/include/glad/
+include/KHR/
+
+# Or ignore just the source file if you want
+/src/glad.c

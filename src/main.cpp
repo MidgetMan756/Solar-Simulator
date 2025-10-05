@@ -10,6 +10,7 @@
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 
+// Please for all that is holy: DO NOT TOUCH THESE
 // Shaders for masses
 const char *vertexShaderSource = "#version 330 core\n"
     "layout (location = 0) in vec3 aPos;\n"
@@ -29,35 +30,43 @@ const char *fragmentShaderSource = "#version 330 core\n"
 // Gravistational Const (G)
 const double G = 6.674e-11;
 
-// Astronomical values in metric
+// Astronomical values in metric (Meters, m/s, kgs)
 const double earthMass = 5.97e24;
 const double earthRadius = 6371000;
 const double moonMass = 7.35e22;
 const double moonRadius = 1740000;
 const double sunMass = 1.99e30;
-const double sunRadius = 6.957e8;
+const double sunRadius = 6.957e9;
 const double earthMoonDistance = 384400000;
+const double sunEarthDistance = 149597870700;
 const double moonTanVelocity = 1018.5;
+const double earthTanVelocity = 29783;
 
-// How many seconds per fram
+// How many minutes pass per second
 const double timeStepMult = 600;
 
 // Camera zoom relative to moons orbital distance
 double zoomFactor = 0.9;
-// Camera center if you ever add panning (keep 0 for now)
+
+// Camera center for panning
 double camX = 0.0, camY = 0.0;
 
 // Zoom out to fit everything
-double screenScale = 1.0 / (384400000.0 * 2) * zoomFactor;  // fit 90% of the screen width at original value
+double screenScale = 1.0 / (earthMoonDistance * 2) * zoomFactor;  // fit 90% of the screen width at original value
 
 // Updates as mouse is pressed and released
 bool isLeftMouseButtonDown = false;
 bool isRightMouseButtonDown = false;
+bool isMiddleMouseButtonDown = false;
 
+// 0 for moon, 1 for planet, 2 for sun
 int massType = 0;
 
 // Start (x,y) pos for the mouse click
 double startxpos, startypos;
+
+// Where the mouse was (x,y) in the last frame
+double lastMouseX = 0.0, lastMouseY = 0.0;
 
 // GLFW global
 GLFWwindow* window;
@@ -78,10 +87,10 @@ void resolveCollision(Mass& m1, Mass& m2);
 void mergeMasses(Mass& m1, Mass& m2);
 void initGLFWnShit();
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset);
-inline void screenToNDC(double sx, double sy, int width, int height,
+void screenToNDC(double sx, double sy, int width, int height,
                         double& nx, double& ny);
-inline void ndcToWorld(double nx, double ny, double& wx, double& wy);
-inline void screenToWorld(double sx, double sy, int width, int height,
+void ndcToWorld(double nx, double ny, double& wx, double& wy);
+void screenToWorld(double sx, double sy, int width, int height,
                           double& wx, double& wy);
 
 
@@ -89,6 +98,8 @@ inline void screenToWorld(double sx, double sy, int width, int height,
 class Mass {
     public:
 
+        // BTW this is almost never used, but it could be fun if I could
+        // figure out how THE FUCK to get text to work within GLFW
         // Mass name
         std::string name;
 
@@ -107,8 +118,8 @@ class Mass {
         // Vertex Array Object and Vertex Buffer Object
         unsigned int VAO, VBO;
         
-        // number of sides, because circles don't exist, but 100 sided polygons are close enough
-        int numOfVertices = 100;
+        // number of sides, because circles don't exist, but 360 sided polygons are close enough
+        int numOfVertices = 360;
 
         // Convert astronomical position to OpenGL position (-1,1)
         float toOpenGL(double meters) {
@@ -147,13 +158,14 @@ class Mass {
             glEnableVertexAttribArray(0);
         }
 
-        // Update ther vertices based on new location
+        // Update the vertices based on new location
         void updateVertices() {
             std::vector<float> vertices;
 
             // Convert physical position (in meters) to OpenGL coordinates
-            float drawX = (float)(x * screenScale);
-            float drawY = (float)(y * screenScale);
+            // Subtact camera position, so that moving the camera left will move masses to the right
+            float drawX = (float)((x - camX) * screenScale);
+            float drawY = (float)((y - camY) * screenScale);
             float drawRadius = (float)(radius * screenScale);
 
             // Center of the mass
@@ -208,8 +220,8 @@ class Mass {
 
         // Calculate the new position using velocity
         void calcNewPos() {
-            x += vx * timeStepMult;
-            y += vy * timeStepMult;
+            x += (vx * timeStepMult);
+            y += (vy * timeStepMult);
         }
 
 };
@@ -217,18 +229,32 @@ class Mass {
 // Main loop
 int main() {
 
+    int frame = 0;
+
     // set up GLFW window and all the other things
     initGLFWnShit();
     glfwSetScrollCallback(window, scroll_callback);
+
+    // Create an instance of mass based off the sun
+    Mass sun;
+    sun.r = 0.75f, sun.g = 0.75f, sun.b = 0.0f;
+    sun.name = "Sun";
+    sun.mass = sunMass;
+    sun.radius = sunRadius * 20;
+    sun.x = 0;
+    sun.vx = 0;
+    sun.init();
+
+    // massesVector.push_back(sun);
 
     // Create an instance of mass based off the earth
     Mass earth;
     earth.r = 0.0f, earth.g = 0.0f, earth.b = 1.0f;
     earth.name = "Earth";
     earth.mass = earthMass;
-    earth.radius = earthRadius * 2;
-    earth.x = -(earthMoonDistance / 5);
-    earth.vx = moonTanVelocity / 5;
+    earth.radius = earthRadius;
+    earth.x = 0;
+    earth.vy = 0;
     earth.init();
 
     // Add earth to the vector of masses
@@ -238,7 +264,7 @@ int main() {
     Mass moon;
     moon.r = 1.5f, moon.g = 1.5f, moon.b = 1.5f;
     moon.name = "Moon";
-    moon.mass = earthMass;
+    moon.mass = moonMass;
     moon.radius = moonRadius;
     moon.x = earthMoonDistance;
     moon.vy = moonTanVelocity;
@@ -255,22 +281,46 @@ int main() {
         // Render loop
         glClear(GL_COLOR_BUFFER_BIT);
 
+        // Count ammount of frames have passed
+        frame++;
+
+        // How many seconds have pasesed
+        double totalSimSeconds = frame * timeStepMult;
+
+        // Calculate days, hours, minutes, and seconds
+        int totalSeconds = static_cast<int>(totalSimSeconds);
+        int days = totalSeconds / 86400;
+        int hours = (totalSeconds % 86400) / 3600;
+        int minutes = (totalSeconds % 3600) / 60;
+
+        // Display time elapsed and move the mouse cursor back to first line to print on one line
+        std::cout << "\033[HSimulated Time: " << days << "d " << hours << "h " << minutes << "m\n";
+
         // For each mass calculate the gravitational pull every
         // other mass applies to itself then average it and set it to the current mass
         for (size_t i = 0; i < massesVector.size(); i++) {
+            // Get individual masses
             Mass& m1 = massesVector[i];
+
+            // Create vector to store acceleration vectors
             std::vector<double> m1axVector;
             std::vector<double> m1ayVector;
+
+            // Reset acceleration
             m1.ax = 0, m1.ay = 0;
 
+            // For every other mass
             for (size_t j = 0; j < massesVector.size(); j++) {
                 if (i==j) continue; // Don't pull yourself
-                Mass& m2 = massesVector[j];
+                Mass& m2 = massesVector[j]; // Get other mass
                 m1.calcAcceleration(m2.mass, m2.x, m2.y);
+
+                // Push the acceleration vectors the other mass is having on the first mass to the vector
                 m1axVector.push_back(m1.ax);
                 m1ayVector.push_back(m1.ay);
             }
 
+            // Average each masses acceleration vectors to get one vector
             m1.ax = average(m1axVector);
             m1.ay = average(m1ayVector);
         }
@@ -320,7 +370,7 @@ int main() {
     return 0;
 }
 
-// function to average all items in a vector
+// function to average all items in a vector. Used to average masses velocity vector
 double average(const std::vector<double>& v) {
     if (v.empty()) return 0; // if the vector is empty
     double sum = std::accumulate(v.begin(), v.end(), 0.0); // get sum
@@ -329,6 +379,8 @@ double average(const std::vector<double>& v) {
 
 // each frame run this to modify the size of the window's viewport
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+
+        // Changes the window's viewport size
         glViewport(0, 0, width, height);
 }
 
@@ -370,8 +422,8 @@ void processInput(GLFWwindow* window) {
         screenToWorld(endx,      endy,      fbw, fbh, endWX,   endWY);
 
         // pick mass archetype
-        double min = massType * 3.0 + 0.25;
-        double max = massType * 3.0 + 2.25;
+        double min = 0.25;
+        double max = 2.25;
 
         double massMult = earthMass, radiusMult = earthRadius;
         float r=0.75f, g=0.75f, b=0.75f;
@@ -390,21 +442,62 @@ void processInput(GLFWwindow* window) {
         temp.x = startWX;
         temp.y = startWY;
 
-        // give it velocity from the drag vector (tune divisor to taste)
-        temp.vx = (endWX - startWX) / 6000.0;
-        temp.vy = (endWY - startWY) / 6000.0;
+        // give it velocity from the drag vector 
+        temp.vx = (endWX - startWX) / (timeStepMult * 10);
+        temp.vy = (endWY - startWY) / (timeStepMult * 10);
 
+        // Create the new objects mass and radius
         temp.mass   = massMult   * random;
         temp.radius = radiusMult * random;
 
+        // Initialize the new mass and add it to the vector of masses
         temp.init();
         massesVector.push_back(temp);
+    
+    // Right mouse is pressed
     } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && !isRightMouseButtonDown) {
         isRightMouseButtonDown = true;
+
+        // Update the new mass type
         massType++;
         massType = massType % 3;
+    // Right mouse is released
     } else if(glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE && isRightMouseButtonDown) {
         isRightMouseButtonDown = false;
+    
+    // Middle mouse is pressed
+    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
+        if (!isMiddleMouseButtonDown) {
+            // Get the mouses starting position
+            isMiddleMouseButtonDown = true;
+            glfwGetCursorPos(window, &lastMouseX, &lastMouseY);
+        } else {
+
+            // Mouse is being dragged: pan camera
+            double mouseX, mouseY;
+            glfwGetCursorPos(window, &mouseX, &mouseY);
+
+            // Get width of the screen
+            int fbWidth, fbHeight;
+            glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+
+            // Convert last frame and current frame to world coordinates
+            double worldPrevX, worldPrevY, worldNowX, worldNowY;
+            screenToWorld(lastMouseX, lastMouseY, fbWidth, fbHeight, worldPrevX, worldPrevY);
+            screenToWorld(mouseX, mouseY, fbWidth, fbHeight, worldNowX, worldNowY);
+
+            // Update camera offset by the **drag delta**
+            camX += worldPrevX - worldNowX;
+            camY += worldPrevY - worldNowY;
+
+            // Update last mouse position for next frame
+            lastMouseX = mouseX;
+            lastMouseY = mouseY;
+        }
+
+    // Middle mouse is released
+    } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_RELEASE) {
+        isMiddleMouseButtonDown = false;
     }
 }
 
@@ -420,6 +513,9 @@ bool checkCollision(const Mass& m1, const Mass& m2) {
     // Closest the two masses can be without existing in the same space
     double minDist = m1.radius + m2.radius;
 
+    // if (distSq < (minDist * minDist)){
+    //     std::cout << m1.name << " collided with " << m2.name;
+    // }   
     // Return true if the distance is less than the least possible distance
     return distSq < (minDist * minDist);
 }
@@ -569,28 +665,31 @@ void initGLFWnShit(){
     glEnableVertexAttribArray(0);
 }
 
+// Function to run when the scrollwheel is scrolled
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
-    zoomFactor += (float)yoffset * 0.001f;
-    if (zoomFactor < 0.0001) zoomFactor = 0.001; // prevent negative zoom
+
+    // Increate or decrease the zoom factor by the scroll wheels scroll
+    zoomFactor += (float)yoffset * 0.005f;
+    if (zoomFactor < 0.0001) zoomFactor = 0.0001; // prevent negative zoom
     screenScale = 1.0 / (384400000.0 * 2) * zoomFactor;
-    std::cout << zoomFactor << std::endl;
 }
 
-inline void screenToNDC(double sx, double sy, int width, int height,
+// Convert GLFW coords to NDC
+void screenToNDC(double sx, double sy, int width, int height,
                         double& nx, double& ny) {
     nx = (sx / width) * 2.0 - 1.0;
     ny = 1.0 - (sy / height) * 2.0; // flip Y (GLFW top-left -> NDC top)
-    // NOTE: do NOT multiply nx by aspect here unless your render path does.
-    // Your current drawing uses raw NDC without aspect compensation.
 }
 
-inline void ndcToWorld(double nx, double ny, double& wx, double& wy) {
+// Convert NDC coords to World
+void ndcToWorld(double nx, double ny, double& wx, double& wy) {
     // inverse of world->NDC: draw = world * screenScale
     wx = nx / screenScale + camX;
     wy = ny / screenScale + camY;
 }
 
-inline void screenToWorld(double sx, double sy, int width, int height,
+// Convert GLFW coords to World
+void screenToWorld(double sx, double sy, int width, int height,
                           double& wx, double& wy) {
     double nx, ny;
     screenToNDC(sx, sy, width, height, nx, ny);
