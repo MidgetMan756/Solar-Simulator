@@ -32,9 +32,6 @@ Ensure these are installed on your system before building.
 
 ## Project Structure
 SolarSim/
-├── .vscode/ # VSCode configuration files
-│ ├── c_cpp_properties.json
-│ └── settings.json
 ├── build/ # Compiled binary
 │ └── SolarSim
 ├── include/ # Header files
