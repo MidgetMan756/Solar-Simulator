@@ -77,6 +77,40 @@ unsigned int textShaderProgram;
 class Mass;
 std::vector<Mass> massesVector;
 
+// Vector of mass names
+std::vector<std::string> celestialBodies = {
+    // Real exoplanets
+    "Kepler-22b", "Kepler-62f", "Kepler-69c", "Kepler-186f", "Kepler-442b", "Kepler-452b",
+    "Kepler-1649c", "Kepler-438b", "Kepler-62e", "Kepler-62c", "Kepler-283c",
+    "TOI-700d", "TOI-1452b", "TOI-1338b", "TOI-700e", "TOI-715b",
+    "LHS 1140b", "LHS 475b", "LHS 3844b",
+    "TRAPPIST-1b", "TRAPPIST-1c", "TRAPPIST-1d", "TRAPPIST-1e", "TRAPPIST-1f", "TRAPPIST-1g", "TRAPPIST-1h",
+    "Proxima b", "Proxima c", "Ross 128b", "Gliese 667Cc", "Gliese 581g",
+    "Gliese 876d", "Gliese 1214b", "Gliese 163c", "HD 209458b", "HD 189733b", "HD 40307g",
+    "HD 85512b", "HD 28185b", "HD 69830d", "HD 21749c", "HD 40307b", "HD 40307c",
+    "51 Pegasi b", "55 Cancri e", "61 Virginis b", "Upsilon Andromedae b",
+    "Tau Ceti e", "Tau Ceti f", "Epsilon Eridani b", "Epsilon Indi Ab",
+    "K2-18b", "K2-155d", "K2-72e", "K2-72f", "K2-288Bb", "K2-315b",
+
+    // Fictional but scientifically styled
+    "HD 42011b", "K2-901c", "Kepler-942b", "Kepler-1101d",
+    "Gliese 942f", "TRAPPIST-3e", "Proxima d", "LHS 442c",
+    "Tau Ceti g", "Epsilon Lyrae b", "HD 40307e",
+    "Ross 294d", "OGLE-TR-56b", "XO-1b", "WASP-12b", "WASP-39b", "WASP-76b",
+    "GJ 1132b", "GJ 357d", "GJ 504b", "GJ 9827d", "GJ 229Ac",
+    "OGLE-2005-BLG-390Lb", "OGLE-2017-BLG-1522b",
+    "PSR B1257+12b", "PSR B1257+12c", "PSR B1620-26b",
+    "CoRoT-7b", "CoRoT-9b", "CoRoT-24c",
+    "HAT-P-11b", "HAT-P-26b", "HAT-P-32b", "HAT-P-7b",
+    "HIP 65426b", "HIP 41378f", "HIP 70849b",
+
+    // Plausible procedural/catalogue-style (fictional)
+    "HD 5012d", "HD 7231c", "Gliese 775b", "Kepler-2339f", "Kepler-3902e",
+    "TOI-995b", "TOI-1423d", "TRAPPIST-9c", "K2-404e", "K2-601b",
+    "OGLE-290b", "OGLE-1024c", "WASP-98c", "WASP-172b", "GJ 4123b",
+    "HIP 99231c", "HIP 12008b", "HD 41023d"
+};
+
 // Create functions
 double average(const std::vector<double>& v);
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
@@ -92,7 +126,7 @@ void screenToNDC(double sx, double sy, int width, int height,
 void ndcToWorld(double nx, double ny, double& wx, double& wy);
 void screenToWorld(double sx, double sy, int width, int height,
                           double& wx, double& wy);
-
+std::string getRandomBodyName();
 
 // Class for each solar mass
 class Mass {
@@ -405,6 +439,31 @@ void processInput(GLFWwindow* window) {
         isLeftMouseButtonDown = true;
         glfwGetCursorPos(window, &startxpos, &startypos);
 
+        double worldScreenX, worldScreenY;
+
+        // Get width of the screen
+        int fbWidth, fbHeight;
+        glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+
+        // Convert Mouse pos to world pos
+        screenToWorld(startxpos, startypos, fbWidth, fbHeight, worldScreenX, worldScreenY);
+
+        // For each mass check if the mouse pos is less that the radius of the mass
+        for (long unsigned int i = 0; i < massesVector.size(); i++) {
+            double mouseMassDist = std::pow(std::pow((worldScreenX - massesVector[i].x), 2) + std::pow((worldScreenY - massesVector[i].y), 2), 0.5f);
+            if (mouseMassDist <= massesVector[i].radius) {
+
+                // If clicked mass has no name assign it a name
+                if (massesVector[i].name == "") {
+                    massesVector[i].name = "[UNKNOWN]";
+                }
+
+                // Print out mass info and set mouse isLeftMouseButtonDown to false so it doesn't create a new mass
+                std::cout << "\033[2;1H\33[KName: " << massesVector[i].name << "\n\33[KMass: " <<  massesVector[i].mass << " Kilograms\n\33[KRadius: " << massesVector[i].radius << " Meters";
+                isLeftMouseButtonDown = false;
+            } 
+        }
+
     // If the left mouse button isn't down and wasn't already up get the pos of the cursor
     } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE && isLeftMouseButtonDown) {
         isLeftMouseButtonDown = false;
@@ -436,8 +495,11 @@ void processInput(GLFWwindow* window) {
 
         float random = randomFloat((float)min, (float)max);
 
+        // Create new mass
         Mass temp;
         temp.r = r; temp.g = g; temp.b = b;
+
+        temp.name = getRandomBodyName();
 
         // place exactly where you clicked (in world units)
         temp.x = startWX;
@@ -700,4 +762,13 @@ void screenToWorld(double sx, double sy, int width, int height,
     double nx, ny;
     screenToNDC(sx, sy, width, height, nx, ny);
     ndcToWorld(nx, ny, wx, wy);
+}
+
+// Function to return a random name from the list
+std::string getRandomBodyName() {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dist(0, celestialBodies.size() - 1);
+
+    return celestialBodies[dist(gen)];
 }

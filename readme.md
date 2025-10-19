@@ -13,6 +13,7 @@ Simulate gravitational interactions between celestial bodies such as the Sun, Ea
 - Real-time visualization using OpenGL
 - Mouse controls:
   - **Left-click & drag:** create a new mass with initial velocity
+  - **Left-Click on mass:** Displays mass info to terminal
   - **Right-click:** cycle through mass types (Moon, Earth, Sun)
   - **Middle-click & drag:** pan the camera
   - **Scroll wheel:** zoom in/out
