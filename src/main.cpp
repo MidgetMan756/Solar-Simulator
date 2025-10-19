@@ -241,11 +241,12 @@ int main() {
     sun.name = "Sun";
     sun.mass = sunMass;
     sun.radius = sunRadius * 20;
-    sun.x = 0;
+    sun.x = -sunEarthDistance;
     sun.vx = 0;
     sun.init();
 
-    // massesVector.push_back(sun);
+    // Add sun to the vector of masses
+    //massesVector.push_back(sun);
 
     // Create an instance of mass based off the earth
     Mass earth;
@@ -668,10 +669,15 @@ void initGLFWnShit(){
 // Function to run when the scrollwheel is scrolled
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
 
-    // Increate or decrease the zoom factor by the scroll wheels scroll
-    zoomFactor += (float)yoffset * 0.005f;
-    if (zoomFactor < 0.0001) zoomFactor = 0.0001; // prevent negative zoom
-    screenScale = 1.0 / (384400000.0 * 2) * zoomFactor;
+    // Only zoom if a control is being pressed
+    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS ||
+    glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS) {
+
+        // Increate or decrease the zoom factor by the scroll wheels scroll
+        zoomFactor += (float)yoffset * 0.005f;
+        if (zoomFactor < 0.005f) zoomFactor = 0.005; // prevent negative zoom
+        screenScale = 1.0 / (384400000.0 * 2) * zoomFactor;
+    }
 }
 
 // Convert GLFW coords to NDC
