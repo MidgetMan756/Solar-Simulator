@@ -4,6 +4,7 @@
 # Ignore Glad headers and source
 /include/glad/
 include/KHR/
+/include/stb_easy_font.h/
 
 # Or ignore just the source file if you want
 /src/glad.c

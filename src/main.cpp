@@ -1,6 +1,8 @@
 #include <iostream>
 #include <string>
+#include <sstream>
 #include <cmath>
+#include <iomanip>
 #include <random>
 #include <vector>
 #include <map>
@@ -9,6 +11,9 @@
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
+
+#define STB_EASY_FONT_IMPLEMENTATION
+#include "stb_easy_font.h"
 
 // Please for all that is holy: DO NOT TOUCH THESE
 // Shaders for masses
@@ -26,6 +31,24 @@ const char *fragmentShaderSource = "#version 330 core\n"
     "{\n"
     "FragColor = vec4(uColor, 1.0);\n"
     "}\0";
+
+const char *textVertexShaderSource = "#version 330 core\n"
+    "layout (location = 0) in vec2 aPos;\n"
+    "uniform vec2 uScreenSize;\n"
+    "void main()\n"
+    "{\n"
+    "    vec2 ndc = (aPos / uScreenSize) * 2.0 - 1.0;\n"
+    "    ndc.y = -ndc.y;\n"
+    "    gl_Position = vec4(ndc, 0.0, 1.0);\n"
+    "}\n";
+
+const char *textFragmentShaderSource = "#version 330 core\n"
+    "out vec4 FragColor;\n"
+    "uniform vec3 uTextColor;\n"
+    "void main()\n"
+    "{\n"
+    "    FragColor = vec4(uTextColor, 1.0);\n"
+    "}\n";
 
 // Gravistational Const (G)
 const double G = 6.674e-11;
@@ -72,6 +95,20 @@ double lastMouseX = 0.0, lastMouseY = 0.0;
 GLFWwindow* window;
 unsigned int shaderProgram;
 unsigned int textShaderProgram;
+unsigned int textVAO, textVBO;
+int textVertexCount = 0;
+std::vector<float> textVertices;
+bool showTextOverlay = false;
+std::string overlayText;
+float overlayScale = 3.0f;
+float overlayMargin = 24.0f;
+float timeOverlayScale = 2.6f;
+float timeOverlayMargin = 24.0f;
+std::string timeOverlayText;
+std::vector<unsigned char> textScratchBuffer;
+constexpr size_t kEasyFontBytesPerChar = 288;
+GLint textScreenUniform = -1;
+GLint textColorUniform = -1;
 
 // Create the class and vector of masses
 class Mass;
@@ -134,6 +171,12 @@ void ndcToWorld(double nx, double ny, double& wx, double& wy);
 void screenToWorld(double sx, double sy, int width, int height,
                           double& wx, double& wy);
 std::string getRandomBodyName();
+void initTextRenderer();
+void updateOverlayText(const std::string& text);
+void clearOverlayText();
+void renderOverlayText();
+bool buildTextMesh(const std::string& text, float scale, float offsetX, float offsetY, int& outVertexCount);
+std::string formatScientific(double value, int precision = 3);
 
 // Class for each solar mass
 class Mass {
@@ -343,9 +386,15 @@ int main() {
         int days = totalSeconds / 86400;
         int hours = (totalSeconds % 86400) / 3600;
         int minutes = (totalSeconds % 3600) / 60;
+        int seconds = totalSeconds % 60;
 
-        // Display time elapsed and move the mouse cursor back to first line to print on one line
-        std::cout << "\033[HSimulated Time: " << days << "d " << hours << "h " << minutes << "m\n";
+        std::ostringstream timeStream;
+        timeStream << "Sim Time: "
+                   << days << "d "
+                   << std::setfill('0') << std::setw(2) << hours << "h "
+                   << std::setw(2) << minutes << "m "
+                   << std::setw(2) << seconds << "s";
+        timeOverlayText = timeStream.str();
 
         // For each mass calculate the gravitational pull every
         // other mass applies to itself then average it and set it to the current mass
@@ -386,6 +435,8 @@ int main() {
             m.updateVertices();
             m.draw(shaderProgram);
         }
+
+        renderOverlayText();
 
         // Check for collision and either bounce the objects or merge the masses
         // (swap with line above or below the or is commented in order to swap between merge and bounce)
@@ -448,6 +499,7 @@ int processInput(GLFWwindow* window) {
     
     // If the escape key was pressed shut down the window
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        clearOverlayText();
         glfwSetWindowShouldClose(window, true);
 
     // If the left mouse button is down and the mouse button isn't already down get the starting pos of the cursor
@@ -478,8 +530,11 @@ int processInput(GLFWwindow* window) {
                     massesVector[i].name = "[UNKNOWN]";
                 }
 
-                // Print out mass info and set mouse isLeftMouseButtonDown to false so it doesn't create a new mass
-                std::cout << "\033[2;1H\33[KName: " << massesVector[i].name << "\n\33[KMass: " <<  massesVector[i].mass << " Kilograms\n\33[KRadius: " << massesVector[i].radius << " Meters";
+                std::ostringstream overlay;
+                overlay << "Name: " << massesVector[i].name
+                        << "\nMass: " << formatScientific(massesVector[i].mass) << " kg"
+                        << "\nRadius: " << formatScientific(massesVector[i].radius) << " m";
+                updateOverlayText(overlay.str());
                 isLeftMouseButtonDown = false;   
             } 
         }
@@ -540,6 +595,7 @@ int processInput(GLFWwindow* window) {
         // Initialize the new mass and add it to the vector of masses
         temp.init();
         massesVector.push_back(temp);
+        clearOverlayText();
     
     // Right mouse is pressed
     } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS && !isRightMouseButtonDown) {
@@ -756,6 +812,29 @@ void initGLFWnShit(){
     // Tell OpenGL how to interpret the vertices and enable it
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
+
+    unsigned int textVertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(textVertexShader, 1, &textVertexShaderSource, NULL);
+    glCompileShader(textVertexShader);
+
+    unsigned int textFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(textFragmentShader, 1, &textFragmentShaderSource, NULL);
+    glCompileShader(textFragmentShader);
+
+    textShaderProgram = glCreateProgram();
+    glAttachShader(textShaderProgram, textVertexShader);
+    glAttachShader(textShaderProgram, textFragmentShader);
+    glLinkProgram(textShaderProgram);
+
+    glDeleteShader(textVertexShader);
+    glDeleteShader(textFragmentShader);
+
+    glUseProgram(textShaderProgram);
+    textScreenUniform = glGetUniformLocation(textShaderProgram, "uScreenSize");
+    textColorUniform = glGetUniformLocation(textShaderProgram, "uTextColor");
+
+    initTextRenderer();
+    glUseProgram(shaderProgram);
 }
 
 // Function to run when the scrollwheel is scrolled
@@ -815,4 +894,111 @@ std::string getRandomBodyName() {
     std::uniform_int_distribution<> dist(0, celestialBodies.size() - 1);
 
     return celestialBodies[dist(gen)];
+}
+
+void initTextRenderer() {
+    glGenVertexArrays(1, &textVAO);
+    glGenBuffers(1, &textVBO);
+    glBindVertexArray(textVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, textVBO);
+    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void updateOverlayText(const std::string& text) {
+    overlayText = text;
+    showTextOverlay = !overlayText.empty();
+}
+
+void clearOverlayText() {
+    showTextOverlay = false;
+    textVertices.clear();
+    textVertexCount = 0;
+    overlayText.clear();
+}
+
+void renderOverlayText() {
+    textVertexCount = 0;
+
+    int fbWidth = 0, fbHeight = 0;
+    glfwGetFramebufferSize(window, &fbWidth, &fbHeight);
+    if (fbWidth <= 0 || fbHeight <= 0) return;
+
+    glUseProgram(textShaderProgram);
+    glUniform2f(textScreenUniform, static_cast<float>(fbWidth), static_cast<float>(fbHeight));
+    glUniform3f(textColorUniform, 0.85f, 0.85f, 0.9f);
+
+    glBindVertexArray(textVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, textVBO);
+
+    int vertexCount = 0;
+
+    if (!timeOverlayText.empty()) {
+        if (buildTextMesh(timeOverlayText, timeOverlayScale, timeOverlayMargin, timeOverlayMargin, vertexCount)) {
+            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+        }
+    }
+
+    if (showTextOverlay && !overlayText.empty()) {
+        float rawWidth = static_cast<float>(stb_easy_font_width(const_cast<char*>(overlayText.c_str())));
+        float offsetX = static_cast<float>(fbWidth) - rawWidth * overlayScale - overlayMargin;
+        if (offsetX < overlayMargin) offsetX = overlayMargin;
+        if (buildTextMesh(overlayText, overlayScale, offsetX, overlayMargin, vertexCount)) {
+            glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+        }
+    }
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+    glUseProgram(shaderProgram);
+}
+
+bool buildTextMesh(const std::string& text, float scale, float offsetX, float offsetY, int& outVertexCount) {
+    outVertexCount = 0;
+    if (text.empty()) return false;
+
+    size_t bufferSize = std::max<size_t>(1, text.size()) * kEasyFontBytesPerChar;
+    textScratchBuffer.resize(bufferSize);
+
+    int quadCount = stb_easy_font_print(0.0f, 0.0f, const_cast<char*>(text.c_str()), nullptr,
+                                        textScratchBuffer.data(), static_cast<int>(bufferSize));
+    if (quadCount <= 0) return false;
+
+    struct EasyFontVertex {
+        float x;
+        float y;
+        float z;
+        unsigned char rgba[4];
+    };
+
+    EasyFontVertex* verts = reinterpret_cast<EasyFontVertex*>(textScratchBuffer.data());
+    textVertices.clear();
+    textVertices.reserve(static_cast<size_t>(quadCount) * 6 * 2);
+
+    for (int i = 0; i < quadCount; ++i) {
+        EasyFontVertex* quad = verts + i * 4;
+        auto emit = [&](int idx) {
+            textVertices.push_back(quad[idx].x * scale + offsetX);
+            textVertices.push_back(quad[idx].y * scale + offsetY);
+        };
+
+        emit(0); emit(1); emit(2);
+        emit(0); emit(2); emit(3);
+    }
+
+    outVertexCount = static_cast<int>(textVertices.size() / 2);
+    if (outVertexCount == 0) return false;
+
+    glBufferData(GL_ARRAY_BUFFER, textVertices.size() * sizeof(float), textVertices.data(), GL_DYNAMIC_DRAW);
+    textVertexCount = outVertexCount;
+    return true;
+}
+
+std::string formatScientific(double value, int precision) {
+    std::ostringstream oss;
+    oss << std::scientific << std::setprecision(precision) << value;
+    return oss.str();
 }
