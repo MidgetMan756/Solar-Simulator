@@ -43,7 +43,7 @@ const double moonTanVelocity = 1018.5;
 const double earthTanVelocity = 29783;
 
 // How many minutes pass per second
-const double timeStepMult = 600;
+double timeStepMult = 600;
 
 // Camera zoom relative to moons orbital distance
 double zoomFactor = 0.9;
@@ -76,6 +76,13 @@ unsigned int textShaderProgram;
 // Create the class and vector of masses
 class Mass;
 std::vector<Mass> massesVector;
+
+// is the camera following a mass
+bool isCameraFollowMass = false;
+
+// is the user clicking a mass
+bool clickedExistingMass = false;
+int selectedMassIndex = -1;  // Also fixes follow camera issue
 
 // Vector of mass names
 std::vector<std::string> celestialBodies = {
@@ -115,7 +122,7 @@ std::vector<std::string> celestialBodies = {
 double average(const std::vector<double>& v);
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 float randomFloat(float min, float max);
-void processInput(GLFWwindow* window);
+int processInput(GLFWwindow* window);
 bool checkCollision(const Mass& m1, const Mass& m2);
 void resolveCollision(Mass& m1, Mass& m2);
 void mergeMasses(Mass& m1, Mass& m2);
@@ -314,6 +321,15 @@ int main() {
         processInput(window);
 
         // Render loop
+
+        // If the camera should follow a mass set cam x and y to match the masses x and y
+        if (isCameraFollowMass && selectedMassIndex >= 0 && selectedMassIndex < static_cast<int>(massesVector.size())) {
+            camX = massesVector[selectedMassIndex].x;
+            camY = massesVector[selectedMassIndex].y;
+        }
+
+        // Set bg color
+        glClearColor(0.025f, 0.005f, 0.075f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         // Count ammount of frames have passed
@@ -428,7 +444,7 @@ float randomFloat(float min, float max) {
 }
 
 // Process keyboard & mouse input
-void processInput(GLFWwindow* window) {
+int processInput(GLFWwindow* window) {
     
     // If the escape key was pressed shut down the window
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
@@ -453,6 +469,10 @@ void processInput(GLFWwindow* window) {
             double mouseMassDist = std::pow(std::pow((worldScreenX - massesVector[i].x), 2) + std::pow((worldScreenY - massesVector[i].y), 2), 0.5f);
             if (mouseMassDist <= massesVector[i].radius) {
 
+                clickedExistingMass = true;
+                selectedMassIndex = i;
+                isCameraFollowMass = true;
+
                 // If clicked mass has no name assign it a name
                 if (massesVector[i].name == "") {
                     massesVector[i].name = "[UNKNOWN]";
@@ -460,7 +480,7 @@ void processInput(GLFWwindow* window) {
 
                 // Print out mass info and set mouse isLeftMouseButtonDown to false so it doesn't create a new mass
                 std::cout << "\033[2;1H\33[KName: " << massesVector[i].name << "\n\33[KMass: " <<  massesVector[i].mass << " Kilograms\n\33[KRadius: " << massesVector[i].radius << " Meters";
-                isLeftMouseButtonDown = false;
+                isLeftMouseButtonDown = false;   
             } 
         }
 
@@ -468,6 +488,10 @@ void processInput(GLFWwindow* window) {
     } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_RELEASE && isLeftMouseButtonDown) {
         isLeftMouseButtonDown = false;
 
+        if (clickedExistingMass) {
+            clickedExistingMass = false;
+            return 0;
+        }
         // end cursor
         double endx, endy;
         glfwGetCursorPos(window, &endx, &endy);
@@ -531,6 +555,9 @@ void processInput(GLFWwindow* window) {
     // Middle mouse is pressed
     } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS) {
         if (!isMiddleMouseButtonDown) {
+            // Camera is no longer following mass
+            isCameraFollowMass = false;
+
             // Get the mouses starting position
             isMiddleMouseButtonDown = true;
             glfwGetCursorPos(window, &lastMouseX, &lastMouseY);
@@ -562,6 +589,9 @@ void processInput(GLFWwindow* window) {
     } else if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_RELEASE) {
         isMiddleMouseButtonDown = false;
     }
+
+    return 0;
+
 }
 
 // Check if the masses are colliding
@@ -740,6 +770,20 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset) {
         if (zoomFactor < 0.005f) zoomFactor = 0.005; // prevent negative zoom
         screenScale = 1.0 / (384400000.0 * 2) * zoomFactor;
     }
+
+    // This doesn't work properly, mostly for debugging
+
+    // if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+    // glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
+
+    //     // Increate or decrease the zoom factor by the scroll wheels scroll
+    //     timeStepMult += (float)yoffset * 10.0f;
+    //     if (timeStepMult < 0) timeStepMult = 0; // prevent negative time
+    //     if (timeStepMult > 3000) timeStepMult = 3000; // prevents unrealistic physics due to being too fast
+
+    //     std::cout << "\033[6;1H\33[KtimeStepMult " << timeStepMult;
+
+    // }
 }
 
 // Convert GLFW coords to NDC
